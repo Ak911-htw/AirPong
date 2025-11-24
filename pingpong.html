@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>AirPing — Gesture Ping Pong</title>
+
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #000;
+    color: #fff;
+    font-family: system-ui, sans-serif;
+  }
+
+  #overlay {
+    position: fixed;
+    top: 10px;
+    width: 100%;
+    text-align: center;
+    font-size: 16px;
+    pointer-events: none;
+    color: #ccc;
+  }
+
+  #video { display: none; }
+</style>
+
+<!-- p5.js -->
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/addons/p5.sound.min.js"></script>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+</head>
+<body>
+
+<div id="overlay">
+  Say <b>"ready"</b> to start — <b>"pause"</b> / <b>"resume"</b> to control.
+</div>
+<video id="video" playsinline></video>
+
+<script>
+/* =====================================================
+   SOUND LOADING (SAFE)
+===================================================== */
+let soundHit, soundAIHit, soundMiss;
+
+function preload() {
+  try { soundHit   = loadSound("sounds/hit.mp3"); } catch(e){}
+  try { soundAIHit = loadSound("sounds/ai_hit.mp3"); } catch(e){}
+  try { soundMiss  = loadSound("sounds/miss.mp3"); } catch(e){}
+}
+
+/* =====================================================
+   HAND TRACKING (MediaPipe Hands)
+===================================================== */
+let handXNorm = 0.5;
+let handPresent = false;
+let handOpen = false;
+
+const videoElement = document.getElementById("video");
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.7,
+  selfieMode: true
+});
+
+hands.onResults(onHandResults);
+
+const camera = new Camera(videoElement, {
+  onFrame: async () => await hands.send({ image: videoElement }),
+  width: 640,
+  height: 480
+});
+camera.start();
+
+function onHandResults(results) {
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    handPresent = false;
+    handOpen = false;
+    return;
+  }
+
+  handPresent = true;
+  const lm = results.multiHandLandmarks[0];
+  handXNorm = lm[9].x;
+
+  // Open-hand detection (3+ extended fingers)
+  const tips = [8,12,16,20];
+  const pips = [6,10,14,18];
+  let ext = 0;
+  for (let i = 0; i < 4; i++) {
+    if (lm[tips[i]].y < lm[pips[i]].y) ext++;
+  }
+  handOpen = (ext >= 3);
+}
+
+/* =====================================================
+   VOICE COMMANDS
+===================================================== */
+let recognition;
+let listening = false;
+
+function initSpeech() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+
+  recognition = new SR();
+  recognition.lang = "en-US";
+  recognition.continuous = true;
+
+  recognition.onresult = e => {
+    const t = e.results[e.results.length-1][0].transcript
+      .toLowerCase()
+      .trim();
+
+    if (t.includes("ready"))  startGame();
+    if (t.includes("pause"))  pauseGame();
+    if (t.includes("resume")) resumeGame();
+  };
+
+  recognition.onend = () => { if (listening) recognition.start(); };
+
+  listening = true;
+  recognition.start();
+}
+window.onload = initSpeech;
+
+/* =====================================================
+   GAME VARIABLES
+===================================================== */
+let gameState = "waiting";
+let isPaused   = false;
+
+let score = 0;
+let highScore = localStorage.getItem("airping_highscore") || 0;
+
+let ballX, ballY, ballVX, ballVY;
+let ballSpeed = 6;
+const ballR   = 12;
+let ballSpin  = 0; // sideways curve
+
+let playerX, playerY;
+let aiX,     aiY;
+
+let collisionGlow = 0;
+
+// Table geometry
+let topW, bottomW;
+let tableTopY, tableBottomY;
+
+/* =====================================================
+   SETUP / RESIZE
+===================================================== */
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  userStartAudio();
+
+  // Strong arcade perspective: slim top, very wide bottom
+  tableTopY    = height * 0.18;
+  tableBottomY = height * 0.88;
+
+  topW    = width * 0.18;  // narrow far edge
+  bottomW = width * 0.98;  // almost full width near edge
+
+  // Paddles positioned just above/below edges of table
+  playerX = width / 2;
+  aiX     = width / 2;
+
+  playerY = tableBottomY - 45;
+  aiY     = tableTopY    + 45;
+
+  resetBall();
+  noStroke();
+  textAlign(CENTER, CENTER);
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+
+  tableTopY    = height * 0.18;
+  tableBottomY = height * 0.88;
+
+  topW    = width * 0.18;
+  bottomW = width * 0.98;
+
+  playerY = tableBottomY - 45;
+  aiY     = tableTopY    + 45;
+}
+
+/* =====================================================
+   GAME CONTROL
+===================================================== */
+function resetBall() {
+  ballX = width / 2;
+  ballY = (tableTopY + tableBottomY) / 2;
+  ballSpeed = 6;
+  ballSpin  = 0;
+
+  const a = random(-0.25, 0.25);
+  const d = random() < 0.5 ? -1 : 1;
+
+  ballVX = ballSpeed * sin(a);
+  ballVY = ballSpeed * d * cos(a);
+}
+
+function startGame() {
+  score     = 0;
+  gameState = "playing";
+  isPaused  = false;
+  resetBall();
+}
+
+function pauseGame()  { if (gameState === "playing") isPaused = true; }
+function resumeGame() { if (gameState === "playing") isPaused = false; }
+
+/* =====================================================
+   TABLE HELPERS
+===================================================== */
+function getTableHalfWidth(py) {
+  const t = constrain((py - tableTopY) / (tableBottomY - tableTopY), 0, 1);
+  return lerp(topW / 2, bottomW / 2, t);
+}
+
+function racketScaleAtY(y) {
+  // 0 at top (AI), 1 at bottom (player)
+  const t = constrain((y - tableTopY) / (tableBottomY - tableTopY), 0, 1);
+  // AI around 0.5, player around 1.1 – strong depth difference
+  return lerp(0.55, 1.1, t);
+}
+
+/* =====================================================
+   UPDATE GAME LOGIC
+===================================================== */
+function updateGame() {
+  // Player paddle follows hand
+  if (handPresent) {
+    const targetX = handXNorm * width;
+    playerX = lerp(playerX, targetX, 0.35);
+  }
+
+  // Clamp paddles inside table width at their Y
+  const pHalfW = getTableHalfWidth(playerY) - 40;
+  playerX = constrain(playerX, width/2 - pHalfW, width/2 + pHalfW);
+
+  const aHalfW = getTableHalfWidth(aiY) - 40;
+  aiX = constrain(ballX, width/2 - aHalfW, width/2 + aHalfW); // AI paddle tracks ball
+
+  // Apply spin → small sideways acceleration, then decay
+  ballVX += ballSpin * 0.02;
+  ballSpin *= 0.99;
+
+  // Move ball ON the table plane (only between top & bottom of table)
+  ballX += ballVX;
+  ballY += ballVY;
+
+  // Side boundaries based on perspective
+  const halfW = getTableHalfWidth(ballY);
+  const leftBound  = width / 2 - halfW + ballR;
+  const rightBound = width / 2 + halfW - ballR;
+
+  if (ballX <= leftBound) {
+    ballX   = leftBound;
+    ballVX *= -1;
+    ballSpin *= 0.8;
+  }
+  if (ballX >= rightBound) {
+    ballX   = rightBound;
+    ballVX *= -1;
+    ballSpin *= 0.8;
+  }
+
+  // AI collision (far racket, smaller)
+  const aiScale   = racketScaleAtY(aiY);
+  const aiRadiusX = 45 * aiScale;
+  const aiHitY    = aiY + 20 * aiScale;
+
+  if (
+    ballVY < 0 &&
+    ballY - ballR <= aiHitY &&
+    abs(ballX - aiX) < aiRadiusX
+  ) {
+    if (soundAIHit?.isLoaded()) soundAIHit.play();
+    ballY  = aiHitY + ballR;
+    ballVY *= -1;
+    collisionGlow = 8;
+    ballSpin *= 0.6; // AI calms spin a bit
+  }
+
+  // Player collision (near racket, larger)
+  const pScale   = racketScaleAtY(playerY);
+  const pRadiusX = 45 * pScale;
+  const pHitY    = playerY - 20 * pScale;
+
+  if (
+    ballVY > 0 &&
+    ballY + ballR >= pHitY &&
+    abs(ballX - playerX) < pRadiusX &&
+    handOpen && handPresent
+  ) {
+    if (soundHit?.isLoaded()) soundHit.play();
+
+    ballY  = pHitY - ballR;
+    ballVY *= -1;
+
+    const offset = (ballX - playerX) / pRadiusX; // -1..1
+    ballVX  = ballSpeed * offset;
+
+    ballSpin = offset * 0.8;
+
+    ballSpeed *= 1.08;
+    const mag = sqrt(ballVX*ballVX + ballVY*ballVY);
+    ballVX = (ballVX / mag) * ballSpeed;
+    ballVY = (ballVY / mag) * ballSpeed;
+
+    score++;
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem("airping_highscore", highScore);
+    }
+
+    collisionGlow = 10;
+  }
+
+  // Miss = ball falls off near edge of table
+  if (ballY - ballR > tableBottomY + 30) {
+    if (soundMiss?.isLoaded()) soundMiss.play();
+    gameState = "gameOver";
+    isPaused  = false;
+  }
+}
+
+/* =====================================================
+   DRAW LOOP
+===================================================== */
+function draw() {
+  drawBackground();
+  drawTableShadow();
+  drawTable();     // includes net
+
+  if (gameState === "playing" && !isPaused) {
+    updateGame();
+  }
+
+  drawBall();
+  drawRackets();
+  drawHUD();
+}
+
+/* =====================================================
+   VISUALS
+===================================================== */
+function drawBackground() {
+  noStroke();
+  for (let y = 0; y < height; y++) {
+    const t = y / height;
+    const col = lerpColor(color(5,5,10), color(0,0,0), t);
+    stroke(col);
+    line(0, y, width, y);
+  }
+}
+
+function drawTableShadow() {
+  fill(0,0,0,200);
+  ellipse(width / 2, height * 0.96, width * 0.55, 50);
+}
+
+function drawTable() {
+  push();
+  const centerY = (tableTopY + tableBottomY) / 2;
+  translate(width / 2, centerY);
+
+  const h = tableBottomY - tableTopY;
+
+  // Strong-perspective table top with gradient
+  for (let i = -h/2; i < h/2; i++) {
+    const t = map(i, -h/2, h/2, 0, 1);
+    const halfW = lerp(topW/2, bottomW/2, t);
+    const col   = lerpColor(color(50,15,15), color(20,5,5), t);
+    stroke(col);
+    strokeWeight(2);
+    line(-halfW, i, halfW, i);
+  }
+
+  // Net (slightly closer to player, not exactly centre)
+  const netLocalY   = lerp(-h/2, h/2, 0.42);
+  const tNet        = map(netLocalY, -h/2, h/2, 0, 1);
+  const netHalfW    = lerp(topW/2, bottomW/2, tNet);
+
+  stroke(230,230,230,220);
+  strokeWeight(4);
+  line(-netHalfW, netLocalY, netHalfW, netLocalY);
+
+  // Mesh
+  stroke(230,230,230,90);
+  strokeWeight(1);
+  for (let x = -netHalfW; x <= netHalfW; x += 14) {
+    line(x, netLocalY - 6, x, netLocalY + 6);
+  }
+
+  pop();
+}
+
+function drawRacket(x, y, col) {
+  const s = racketScaleAtY(y);
+
+  push();
+  translate(x, y);
+  scale(s);
+
+  // flat paddle (no tilt)
+  fill(120, 60, 40);
+  rect(-7, 30, 14, 45, 7);
+
+  fill(col);
+  ellipse(0, 0, 90, 110);
+
+  pop();
+}
+
+function drawRackets() {
+  // Player (near, large)
+  drawRacket(playerX, playerY, color(255,120,120));
+
+  // AI (far, smaller)
+  drawRacket(aiX, aiY, color(120,160,255));
+}
+
+function drawBall() {
+  // Glow after hit
+  if (collisionGlow > 0) {
+    fill(255,180,100, map(collisionGlow, 0, 10, 0, 220));
+    ellipse(ballX, ballY, ballR * 3);
+    collisionGlow--;
+  }
+
+  // Shadow close to ball → grounded
+  fill(0,0,0,110);
+  ellipse(ballX, ballY + 4, ballR * 1.5);
+
+  // Ball
+  fill(255);
+  ellipse(ballX, ballY, ballR * 2.1);
+}
+
+function drawHUD() {
+  fill(255);
+  textSize(24);
+  text(`Score: ${score}   High Score: ${highScore}`, width / 2, 70);
+
+  
+
+  if (gameState === "gameOver") {
+    textSize(18);
+    text(`Game Over — say "ready"`, width / 2, height - 50);
+  }
+
+  if (isPaused) {
+    fill(255,220,0);
+    textSize(24);
+    text(`PAUSED — say "resume"`, width / 2, height / 2);
+  }
+}
+</script>
+
+</body>
+</html>
