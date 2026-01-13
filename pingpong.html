@@ -39,9 +39,7 @@
 <body>
 
 <div id="overlay">
-  <span id="instructions">
-    Say <b>"ready"</b> to start — <b>"pause"</b> / <b>"resume"</b> to control.
-  </span>
+  Say <b>"ready"</b> to start — <b>"pause"</b> / <b>"resume"</b> to control.
 </div>
 <video id="video" playsinline></video>
 
@@ -109,28 +107,14 @@ function onHandResults(results) {
 }
 
 /* =====================================================
-   VOICE COMMANDS + ALWAYS-ON KEYBOARD CONTROLS
+   VOICE COMMANDS
 ===================================================== */
 let recognition;
 let listening = false;
 
 function initSpeech() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const instr = document.getElementById("instructions") || document.getElementById("overlay");
-
-  if (!SR) {
-    console.warn("SpeechRecognition not available. Using keyboard controls (R/P/O).");
-    if (instr) {
-      instr.innerHTML = `Use keyboard controls:
-        <b>R</b> = ready, <b>P</b> = pause, <b>O</b> = resume.`;
-    }
-    return; // no speech, but keyboard will still work
-  }
-
-  if (instr) {
-    instr.innerHTML = `Say <b>"ready"</b> to start — <b>"pause"</b> / <b>"resume"</b> to control.
-      (You can also use <b>R</b>/<b>P</b>/<b>O</b> keys.)`;
-  }
+  if (!SR) return;
 
   recognition = new SR();
   recognition.lang = "en-US";
@@ -151,21 +135,7 @@ function initSpeech() {
   listening = true;
   recognition.start();
 }
-
-// ALWAYS-ON keyboard shortcuts
-function initKeyboardControls() {
-  window.addEventListener("keydown", (e) => {
-    const key = e.key.toLowerCase();
-    if (key === "r") startGame();   // R = ready
-    if (key === "p") pauseGame();   // P = pause
-    if (key === "o") resumeGame();  // O = resume
-  });
-}
-
-window.addEventListener("load", () => {
-  initSpeech();           // will silently fail if SpeechRecognition not available
-  initKeyboardControls(); // always works (browser + Electron)
-});
+window.onload = initSpeech;
 
 /* =====================================================
    GAME VARIABLES
@@ -319,7 +289,7 @@ function updateGame() {
   if (
     ballVY < 0 &&
     ballY - ballR <= aiHitY &&
-    Math.abs(ballX - aiX) < aiRadiusX
+    abs(ballX - aiX) < aiRadiusX
   ) {
     if (soundAIHit?.isLoaded()) soundAIHit.play();
     ballY  = aiHitY + ballR;
@@ -336,7 +306,7 @@ function updateGame() {
   if (
     ballVY > 0 &&
     ballY + ballR >= pHitY &&
-    Math.abs(ballX - playerX) < pRadiusX &&
+    abs(ballX - playerX) < pRadiusX &&
     handOpen && handPresent
   ) {
     if (soundHit?.isLoaded()) soundHit.play();
@@ -350,7 +320,7 @@ function updateGame() {
     ballSpin = offset * 0.8;
 
     ballSpeed *= 1.08;
-    const mag = Math.sqrt(ballVX*ballVX + ballVY*ballVY);
+    const mag = sqrt(ballVX*ballVX + ballVY*ballVY);
     ballVX = (ballVX / mag) * ballSpeed;
     ballVY = (ballVY / mag) * ballSpeed;
 
@@ -488,6 +458,8 @@ function drawHUD() {
   fill(255);
   textSize(24);
   text(`Score: ${score}   High Score: ${highScore}`, width / 2, 70);
+
+  
 
   if (gameState === "gameOver") {
     textSize(18);
