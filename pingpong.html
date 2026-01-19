@@ -62,6 +62,10 @@ let handXNorm = 0.5;
 let handPresent = false;
 let handOpen = false;
 
+// NEW: dot tracking (normalized 0..1)
+let handDotX = 0.5;
+let handDotY = 0.5;
+
 const videoElement = document.getElementById("video");
 
 const hands = new Hands({
@@ -94,7 +98,13 @@ function onHandResults(results) {
 
   handPresent = true;
   const lm = results.multiHandLandmarks[0];
+
+  // Stable point: middle finger MCP (9)
   handXNorm = lm[9].x;
+
+  // NEW: also track Y for pause dot
+  handDotX = lm[9].x;
+  handDotY = lm[9].y;
 
   // Open-hand detection (3+ extended fingers)
   const tips = [8,12,16,20];
@@ -160,6 +170,12 @@ let collisionGlow = 0;
 let topW, bottomW;
 let tableTopY, tableBottomY;
 
+// NEW: countdown
+let countdownActive = false;
+let countdownValue = 0;
+let countdownStartMs = 0;
+const COUNTDOWN_SECONDS = 3;
+
 /* =====================================================
    SETUP / RESIZE
 ===================================================== */
@@ -215,11 +231,16 @@ function resetBall() {
   ballVY = ballSpeed * d * cos(a);
 }
 
+// UPDATED: start triggers countdown first
 function startGame() {
   score     = 0;
   gameState = "playing";
   isPaused  = false;
   resetBall();
+
+  countdownActive = true;
+  countdownValue = COUNTDOWN_SECONDS; // 3
+  countdownStartMs = millis();
 }
 
 function pauseGame()  { if (gameState === "playing") isPaused = true; }
@@ -241,6 +262,40 @@ function racketScaleAtY(y) {
 }
 
 /* =====================================================
+   COUNTDOWN HELPERS
+===================================================== */
+function updateCountdown() {
+  if (!countdownActive) return;
+
+  const elapsed = (millis() - countdownStartMs) / 1000;
+  const remaining = COUNTDOWN_SECONDS - floor(elapsed); // 3,2,1,0
+
+  countdownValue = remaining;
+
+  if (remaining <= 0) {
+    countdownActive = false;
+  }
+}
+
+function drawCountdown() {
+  if (!countdownActive) return;
+
+  push();
+  noStroke();
+  fill(0, 0, 0, 160);
+  rect(0, 0, width, height);
+
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(44);
+
+  // Show 3,2,1 (never show 0)
+  text(`Game starts in ${max(1, countdownValue)}`, width / 2, height / 2);
+
+  pop();
+}
+
+/* =====================================================
    UPDATE GAME LOGIC
 ===================================================== */
 function updateGame() {
@@ -248,7 +303,20 @@ function updateGame() {
   if (handPresent) {
     const targetX = handXNorm * width;
     playerX = lerp(playerX, targetX, 0.35);
+
+    // ✅ NEW: move player forward/backward using handDotY
+    // handDotY is 0 (top) ... 1 (bottom)
+    // We want player to move only between mid table and bottom edge
+    const minY = (tableTopY + tableBottomY) / 2; // half court limit
+    const maxY = tableBottomY - 45;              // near edge (default)
+    const targetY = lerp(minY, maxY, handDotY);  // map handDotY to allowed Y
+    playerY = lerp(playerY, targetY, 0.2);
   }
+
+  // Clamp player Y inside allowed zone
+  const minPlayerY = (tableTopY + tableBottomY) / 2;
+  const maxPlayerY = tableBottomY - 45;
+  playerY = constrain(playerY, minPlayerY, maxPlayerY);
 
   // Clamp paddles inside table width at their Y
   const pHalfW = getTableHalfWidth(playerY) - 40;
@@ -295,7 +363,7 @@ function updateGame() {
     ballY  = aiHitY + ballR;
     ballVY *= -1;
     collisionGlow = 8;
-    ballSpin *= 0.6; // AI calms spin a bit
+    ballSpin *= 0.6;
   }
 
   // Player collision (near racket, larger)
@@ -333,11 +401,11 @@ function updateGame() {
     collisionGlow = 10;
   }
 
-  // Miss = ball falls off near edge of table
   if (ballY - ballR > tableBottomY + 30) {
     if (soundMiss?.isLoaded()) soundMiss.play();
     gameState = "gameOver";
     isPaused  = false;
+    countdownActive = false;
   }
 }
 
@@ -347,15 +415,21 @@ function updateGame() {
 function draw() {
   drawBackground();
   drawTableShadow();
-  drawTable();     // includes net
+  drawTable();
 
-  if (gameState === "playing" && !isPaused) {
+  if (gameState === "playing") {
+    updateCountdown();
+  }
+
+  if (gameState === "playing" && !isPaused && !countdownActive) {
     updateGame();
   }
 
   drawBall();
   drawRackets();
   drawHUD();
+  drawPauseHandDot();
+  drawCountdown();
 }
 
 /* =====================================================
@@ -383,7 +457,6 @@ function drawTable() {
 
   const h = tableBottomY - tableTopY;
 
-  // Strong-perspective table top with gradient
   for (let i = -h/2; i < h/2; i++) {
     const t = map(i, -h/2, h/2, 0, 1);
     const halfW = lerp(topW/2, bottomW/2, t);
@@ -393,7 +466,6 @@ function drawTable() {
     line(-halfW, i, halfW, i);
   }
 
-  // Net (slightly closer to player, not exactly centre)
   const netLocalY   = lerp(-h/2, h/2, 0.42);
   const tNet        = map(netLocalY, -h/2, h/2, 0, 1);
   const netHalfW    = lerp(topW/2, bottomW/2, tNet);
@@ -402,7 +474,6 @@ function drawTable() {
   strokeWeight(4);
   line(-netHalfW, netLocalY, netHalfW, netLocalY);
 
-  // Mesh
   stroke(230,230,230,90);
   strokeWeight(1);
   for (let x = -netHalfW; x <= netHalfW; x += 14) {
@@ -419,7 +490,6 @@ function drawRacket(x, y, col) {
   translate(x, y);
   scale(s);
 
-  // flat paddle (no tilt)
   fill(120, 60, 40);
   rect(-7, 30, 14, 45, 7);
 
@@ -430,36 +500,44 @@ function drawRacket(x, y, col) {
 }
 
 function drawRackets() {
-  // Player (near, large)
   drawRacket(playerX, playerY, color(255,120,120));
-
-  // AI (far, smaller)
   drawRacket(aiX, aiY, color(120,160,255));
 }
 
 function drawBall() {
-  // Glow after hit
   if (collisionGlow > 0) {
     fill(255,180,100, map(collisionGlow, 0, 10, 0, 220));
     ellipse(ballX, ballY, ballR * 3);
     collisionGlow--;
   }
 
-  // Shadow close to ball → grounded
   fill(0,0,0,110);
   ellipse(ballX, ballY + 4, ballR * 1.5);
 
-  // Ball
   fill(255);
   ellipse(ballX, ballY, ballR * 2.1);
+}
+
+function drawPauseHandDot() {
+  if (!(gameState === "playing" && isPaused)) return;
+  if (!handPresent) return;
+
+  const x = handDotX * width;
+  const y = handDotY * height;
+
+  push();
+  noStroke();
+  fill(255, 255, 255, 60);
+  ellipse(x, y, 34);
+  fill(255, 220, 0);
+  ellipse(x, y, 14);
+  pop();
 }
 
 function drawHUD() {
   fill(255);
   textSize(24);
   text(`Score: ${score}   High Score: ${highScore}`, width / 2, 70);
-
-  
 
   if (gameState === "gameOver") {
     textSize(18);
