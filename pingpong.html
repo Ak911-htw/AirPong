@@ -24,7 +24,20 @@
     color: #ccc;
   }
 
-  #video { display: none; }
+  #video {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  width: 160px;
+  height: 120px;
+  border-radius: 8px;
+  border: 2px solid rgba(255,255,255,0.4);
+  opacity: 0.75;
+  z-index: 10;
+  object-fit: cover;
+  transform: scaleX(-1); /* mirror for selfie view */
+}
+
 </style>
 
 <!-- p5.js -->
